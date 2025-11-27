@@ -1,69 +1,87 @@
 import express from "express";
 import cors from "cors";
-import ytdl from "@distube/ytdl-core";
-import ffmpeg from "fluent-ffmpeg";
-import ffmpegPath from "ffmpeg-static";
 import fetch from "node-fetch";
+import { Innertube } from "youtubei.js";
 
 const app = express();
-
-// --- MIDDLEWARE ---
 app.use(cors());
 app.use(express.json());
 
-ffmpeg.setFfmpegPath(ffmpegPath);
+// ----------------------------
+// INIT YOUTUBE CLIENT
+// ----------------------------
+let youtube;
+(async () => {
+  youtube = await Innertube.create();
+  console.log("🔥 YouTube API Ready");
+})();
 
-// --- ROOT CHECK ---
+// ----------------------------
+// ROOT CHECK
+// ----------------------------
 app.get("/", (req, res) => {
-  res.send("ClipGrab API is running on Render! This API is now a URL Resolver.");
+  res.send("🔥 ClipGrab API is running — YouTube + TikTok Resolver Ready!");
 });
 
-// --- MAIN RESOLVER ROUTE ---
+// ----------------------------
+// MAIN RESOLVER ROUTE
+// ----------------------------
 app.post("/download-video", async (req, res) => {
   const { url, format } = req.body;
 
-  if (!url) {
+  if (!url)
     return res.status(400).json({
       success: false,
       message: "Missing URL",
     });
-  }
 
   try {
     // -----------------------------------------
     // YOUTUBE HANDLER
     // -----------------------------------------
-    if (ytdl.validateURL(url)) {
-      const info = await ytdl.getInfo(url);
-      const title = info.videoDetails.title.replace(/[^\w\s]/gi, "");
-      const filename =
-        format === "mp3" ? `${title}.mp3` : `${title}.mp4`;
+    if (url.includes("youtube.com") || url.includes("youtu.be")) {
+      const info = await youtube.getBasicInfo(url);
+      const title = info.basic_info.title.replace(/[^\w\s]/gi, "");
 
+      // ---- MP3 AUDIO ----
       if (format === "mp3") {
-        // Return MP3 stream URL
-        const audioFormat = ytdl.chooseFormat(info.formats, {
-          filter: "audioonly",
-        });
+        const audio = info.streaming_data.adaptive_formats.find((f) =>
+          f.mime_type.includes("audio")
+        );
+
+        if (!audio) {
+          return res.status(500).json({
+            success: false,
+            message: "No audio format found",
+          });
+        }
 
         return res.json({
           success: true,
           source: "youtube",
           format: "mp3",
-          filename,
-          downloadUrl: audioFormat.url,
+          filename: `${title}.mp3`,
+          downloadUrl: audio.url,
         });
       }
 
-      // MP4 mode
-      const videoFormat = ytdl.chooseFormat(info.formats, {
-        quality: "highest",
-      });
+      // ---- MP4 VIDEO ----
+      const videoFormat = info.streaming_data.formats.find((f) =>
+        f.mime_type.includes("video/mp4")
+      );
+
+      if (!videoFormat) {
+        return res.status(500).json({
+          success: false,
+          message: "No MP4 video format available",
+        });
+      }
 
       return res.json({
         success: true,
         source: "youtube",
         format: "mp4",
-        filename,
+        filename: `${title}.mp4`,
         downloadUrl: videoFormat.url,
       });
     }
@@ -96,22 +114,24 @@ app.post("/download-video", async (req, res) => {
     }
 
     // -----------------------------------------
-    // UNSUPPORTED PLATFORM
+    // UNSUPPORTED URL
     // -----------------------------------------
     return res.status(400).json({
       success: false,
       message: "Unsupported URL. Only YouTube + TikTok supported.",
     });
-  } catch (err) {
-    console.error("Error:", err);
+  } catch (error) {
+    console.error("❌ Server Error:", error);
     return res.status(500).json({
       success: false,
       message: "Server error resolving URL",
-      error: err.message,
+      error: error.message,
     });
   }
 });
 
-// --- START SERVER ---
+// ----------------------------
+// START SERVER
+// ----------------------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🔥 Server running on port ${PORT}`));
