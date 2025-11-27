@@ -1,137 +1,95 @@
-import express from "express";
-import cors from "cors";
-import fetch from "node-fetch";
-import { Innertube } from "youtubei.js";
+// main.js
+import express from 'express';
+import cors from 'cors';
+import ytdl from 'ytdl-core';
+import fs from 'fs';
+import path from 'path';
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// ----------------------------
-// INIT YOUTUBE CLIENT
-// ----------------------------
-let youtube;
-(async () => {
-  youtube = await Innertube.create();
-  console.log("🔥 YouTube API Ready");
-})();
+/**
+ * MOCK Instagram Reel scraper
+ */
+async function getInstagramDirectVideoUrl(url) {
+  if (url.includes('example-fail')) {
+    return { success: false, message: 'Instagram link failed to scrape.' };
+  }
+  return {
+    success: true,
+    videoUrl: 'https://mock-video-cdn.com/instagram/reel-placeholder.mp4',
+    filename: 'instagram_reel_download.mp4'
+  };
+}
 
-// ----------------------------
-// ROOT CHECK
-// ----------------------------
-app.get("/", (req, res) => {
-  res.send("🔥 ClipGrab API is running — YouTube + TikTok Resolver Ready!");
-});
-
-// ----------------------------
-// MAIN RESOLVER ROUTE
-// ----------------------------
-app.post("/download-video", async (req, res) => {
-  const { url, format } = req.body;
-
-  if (!url)
-    return res.status(400).json({
-      success: false,
-      message: "Missing URL",
-    });
+/**
+ * YouTube scraper with ytdl-core
+ */
+async function getYouTubeVideo(url, format = 'mp4') {
+  if (!ytdl.validateURL(url)) {
+    return { success: false, message: 'Invalid YouTube URL' };
+  }
 
   try {
-    // -----------------------------------------
-    // YOUTUBE HANDLER
-    // -----------------------------------------
-    if (url.includes("youtube.com") || url.includes("youtu.be")) {
-      const info = await youtube.getBasicInfo(url);
-      const title = info.basic_info.title.replace(/[^\w\s]/gi, "");
+    const info = await ytdl.getInfo(url);
+    const title = info.videoDetails.title.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_');
 
-      // ---- MP3 AUDIO ----
-      if (format === "mp3") {
-        const audio = info.streaming_data.adaptive_formats.find((f) =>
-          f.mime_type.includes("audio")
-        );
+    // MP4 = highest quality video+audio
+    // MP3 = audio only
+    const filter = format === 'mp3' ? 'audioonly' : 'audioandvideo';
 
-        if (!audio) {
-          return res.status(500).json({
-            success: false,
-            message: "No audio format found",
-          });
-        }
-
-        return res.json({
-          success: true,
-          source: "youtube",
-          format: "mp3",
-          filename: `${title}.mp3`,
-          downloadUrl: audio.url,
-        });
-      }
-
-      // ---- MP4 VIDEO ----
-      const videoFormat = info.streaming_data.formats.find((f) =>
-        f.mime_type.includes("video/mp4")
-      );
-
-      if (!videoFormat) {
-        return res.status(500).json({
-          success: false,
-          message: "No MP4 video format available",
-        });
-      }
-
-      return res.json({
-        success: true,
-        source: "youtube",
-        format: "mp4",
-        filename: `${title}.mp4`,
-        downloadUrl: videoFormat.url,
-      });
+    const formatObj = ytdl.chooseFormat(info.formats, { filter, quality: 'highest' });
+    if (!formatObj) {
+      return { success: false, message: 'No suitable format found' };
     }
 
-    // -----------------------------------------
-    // TIKTOK HANDLER
-    // -----------------------------------------
-    if (url.includes("tiktok.com")) {
-      const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(
-        url
-      )}`;
+    return {
+      success: true,
+      downloadUrl: formatObj.url,
+      filename: `${title}.${format === 'mp3' ? 'mp3' : 'mp4'}`
+    };
+  } catch (err) {
+    console.error('YouTube scrape error:', err);
+    return { success: false, message: 'Failed to fetch YouTube video' };
+  }
+}
 
-      const response = await fetch(apiUrl);
-      const data = await response.json();
+// Routes
+app.get('/', (req, res) => {
+  res.send('ClipGrab Scraper API is live 🔥');
+});
 
-      if (!data.data || !data.data.play) {
-        return res.status(500).json({
-          success: false,
-          message: "Failed to resolve TikTok URL",
-        });
-      }
+app.post('/download-video', async (req, res) => {
+  const { url, platform, format } = req.body;
 
-      return res.json({
-        success: true,
-        source: "tiktok",
-        format: "mp4",
-        filename: "tiktok_video.mp4",
-        downloadUrl: data.data.play,
-      });
+  if (!url || !platform) {
+    return res.status(400).json({ success: false, message: 'Missing url or platform' });
+  }
+
+  try {
+    if (platform === 'youtube') {
+      const result = await getYouTubeVideo(url, format || 'mp4');
+      if (!result.success) return res.status(400).json(result);
+      return res.json(result);
+    } else if (platform === 'instagram') {
+      const result = await getInstagramDirectVideoUrl(url);
+      if (!result.success) return res.status(400).json(result);
+      return res.json(result);
+    } else if (platform === 'tiktok') {
+      return res.status(501).json({ success: false, message: 'TikTok not implemented yet' });
+    } else {
+      return res.status(400).json({ success: false, message: 'Unsupported platform' });
     }
-
-    // -----------------------------------------
-    // UNSUPPORTED URL
-    // -----------------------------------------
-    return res.status(400).json({
-      success: false,
-      message: "Unsupported URL. Only YouTube + TikTok supported.",
-    });
-  } catch (error) {
-    console.error("❌ Server Error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error resolving URL",
-      error: error.message,
-    });
+  } catch (err) {
+    console.error('Download error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-// ----------------------------
-// START SERVER
-// ----------------------------
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🔥 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`ClipGrab Scraper API running at http://localhost:${PORT}`);
+});
