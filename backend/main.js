@@ -1,73 +1,117 @@
-// server.js
+import express from "express";
+import cors from "cors";
+import ytdl from "@distube/ytdl-core";
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegPath from "ffmpeg-static";
+import fetch from "node-fetch";
 
-const express = require('express');
-const cors = require('cors');
 const app = express();
-const PORT = 3000; // Choose any port not currently in use
-const ytdl = require('ytdl-core'); 
-const fs = require('fs');
-// Middleware
-// 1. CORS: Allows your React Native app to make requests to this API.
+
+// --- MIDDLEWARE ---
 app.use(cors());
-// 2. Body Parser: Allows Express to read JSON data sent from the client (your app).
 app.use(express.json());
 
-// --- ROUTES ---
+ffmpeg.setFfmpegPath(ffmpegPath);
 
-// Health Check Route (Test if server is running)
-app.get('/', (req, res) => {
-    res.send('ClipGrab API is running!');
+// --- ROOT CHECK ---
+app.get("/", (req, res) => {
+  res.send("ClipGrab API is running on Render! This API is now a URL Resolver.");
 });
 
-// ** 🚨 Primary Download Endpoint 🚨 **
-// This endpoint will receive the video URL and platform (youtube, tiktok, etc.)
-app.post('/download-video', async (req, res) => {
-    const { videoURL, platform } = req.body; // e.g., videoURL: 'https://youtu.be/...'
+// --- MAIN RESOLVER ROUTE ---
+app.post("/download-video", async (req, res) => {
+  const { url, format } = req.body;
 
-    if (platform === 'youtube') {
-        try {
-            if (!ytdl.validateURL(videoURL)) {
-                return res.status(400).json({ success: false, message: 'Invalid YouTube URL.' });
-            }
+  if (!url) {
+    return res.status(400).json({
+      success: false,
+      message: "Missing URL",
+    });
+  }
 
-            // Set headers to force the browser/app to download the file
-            // We use the 'attachment' header to stream the file directly back to the client.
-            res.header('Content-Disposition', 'attachment; filename="video.mp4"');
+  try {
+    // -----------------------------------------
+    // YOUTUBE HANDLER
+    // -----------------------------------------
+    if (ytdl.validateURL(url)) {
+      const info = await ytdl.getInfo(url);
+      const title = info.videoDetails.title.replace(/[^\w\s]/gi, "");
+      const filename =
+        format === "mp3" ? `${title}.mp3` : `${title}.mp4`;
 
-            // 1. Get the stream (high-quality audio and video combined)
-            const videoStream = ytdl(videoURL, { 
-                filter: 'audioandvideo', // Request stream with both audio and video
-                quality: 'highestvideo'  // Attempt to get the best quality
-            });
-
-            // 2. Pipe the stream directly to the response object.
-            // This is the efficient way to send large files without saving them to your server disk.
-            videoStream.pipe(res);
-
-            // Handle errors during the stream
-            videoStream.on('error', (err) => {
-                console.error('YTDL Error:', err);
-                // Check if headers have already been sent before sending a 500
-                if (!res.headersSent) {
-                    return res.status(500).json({ success: false, message: 'Could not process YouTube link.' });
-                }
-            });
-
-        } catch (error) {
-            console.error('Download initiation error:', error);
-            res.status(500).json({ success: false, message: 'Internal server error during processing.' });
-        }
-    } else {
-        // Handle Instagram and TikTok placeholders (these require different libraries/techniques)
-        res.status(501).json({ 
-            success: false, 
-            message: `Download for ${platform} is not yet implemented.` 
+      if (format === "mp3") {
+        // Return MP3 stream URL
+        const audioFormat = ytdl.chooseFormat(info.formats, {
+          filter: "audioonly",
         });
+
+        return res.json({
+          success: true,
+          source: "youtube",
+          format: "mp3",
+          filename,
+          downloadUrl: audioFormat.url,
+        });
+      }
+
+      // MP4 mode
+      const videoFormat = ytdl.chooseFormat(info.formats, {
+        quality: "highest",
+      });
+
+      return res.json({
+        success: true,
+        source: "youtube",
+        format: "mp4",
+        filename,
+        downloadUrl: videoFormat.url,
+      });
     }
+
+    // -----------------------------------------
+    // TIKTOK HANDLER
+    // -----------------------------------------
+    if (url.includes("tiktok.com")) {
+      const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(
+        url
+      )}`;
+
+      const response = await fetch(apiUrl);
+      const data = await response.json();
+
+      if (!data.data || !data.data.play) {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to resolve TikTok URL",
+        });
+      }
+
+      return res.json({
+        success: true,
+        source: "tiktok",
+        format: "mp4",
+        filename: "tiktok_video.mp4",
+        downloadUrl: data.data.play,
+      });
+    }
+
+    // -----------------------------------------
+    // UNSUPPORTED PLATFORM
+    // -----------------------------------------
+    return res.status(400).json({
+      success: false,
+      message: "Unsupported URL. Only YouTube + TikTok supported.",
+    });
+  } catch (err) {
+    console.error("Error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error resolving URL",
+      error: err.message,
+    });
+  }
 });
 
-// Start the server
-app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
-    console.log(`Access at: http://localhost:${PORT}`);
-});
+// --- START SERVER ---
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🔥 Server running on port ${PORT}`));
